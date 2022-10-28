@@ -1,0 +1,145 @@
+---
+title: "NYPD Shooting"
+author: "D. Ikoma"
+date: "2022-09-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Objective of analysis
+
+New York is a quite attractive city for foreign travelers. But, gun shooting incidents are of critical concern for foreign travelers in New York. Therefore we would like to investigate the trend of gun shooting incidents in New York. Especially the trend of areas and time slots is helpful for travelers avoiding shooting incidents.
+
+## Clear memory
+
+At first, we clear memories in advance.
+
+```{r clear_memory}
+rm(list=ls())
+gc();gc()
+```
+
+## Import libraries
+
+We import libraries to use this analysis.
+
+```{r import_libraries}
+# ```{r import_libraries, echo = TRUE, message = FALSE}
+Sys.setenv(LANGUAGE="en")
+library(tidyverse)
+library(lubridate)
+```
+
+## Read data
+
+We read data from web site.
+
+```{r get_data}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/"
+file_names <- c("rows.csv")
+urls <- str_c(url_in, file_names)
+data_NYPD <- read_csv(urls[1])
+spec(data_NYPD)
+```
+
+## Tidy data
+
+We investigate basic data and statistics. Next we remove some data and missing values for our analysis.
+
+```{r tidy_data}
+data_NYPD
+summary(data_NYPD)
+data_NYPD <- data_NYPD %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+  select(-c(LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX, PERP_RACE)) %>%
+  drop_na(JURISDICTION_CODE)
+data_NYPD
+summary(data_NYPD)
+```
+
+We group shooting criminals counts by borough to analyze area trends.
+
+```{r group_by_BORO}
+data_by_BORO <- data_NYPD %>%
+  group_by(BORO) %>%
+  count(BORO) %>%
+  summarize(cases = sum(n)) %>%
+  ungroup()
+data_by_BORO
+```
+
+Also, we group them by hour to know the dangerous time slots.
+
+```{r group_by_hour}
+tibble_opt <- list(
+  "tibble.print_max" = 100,
+  "tibble.print_min" = 20
+)
+options(tibble_opt)
+
+data_by_hour <- data_NYPD %>% 
+  mutate(hour = hour(OCCUR_TIME)) %>% 
+  group_by(hour) %>%
+  count(hour) %>%
+  summarize(hours = sum(n)) %>%
+  ungroup()
+data_by_hour
+```
+
+## Visualize data
+
+Here is a graphic representation of shooting counts by borough.
+
+```{r visualize_by_BORO}
+data_by_BORO %>%
+  ggplot(aes(x = BORO, y = cases)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 0)) +
+  labs(title = "NYPD shooting", y = "count")
+```
+
+We also visualize the shooting incidents counts by hour.
+
+```{r visualize_by_hour}
+data_by_hour %>%
+  ggplot(aes(x = hour, y = hours)) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 0)) +
+  labs(title = "NYPD shooting", y = "count")
+```
+
+## Modeling
+
+We model the number of criminal count by hour. We use a polynomial regression model.
+
+```{r modeling}
+mod <- lm(hours ~ hour + I(hour^2) + I(hour^3) + I(hour^4), data = data_by_hour)
+
+summary(mod)
+data_by_hour %>% slice_min(hours)
+data_by_hour %>% slice_max(hours)
+x_grid <- seq(0, 23)
+new_df <- tibble(hours = x_grid)
+data_by_hour_pred <- data_by_hour %>% mutate(pred = predict(mod))
+data_by_hour_pred %>% ggplot() +
+  geom_point(aes(x = hour, y = hours), color = "blue") +
+  geom_line(aes(x = hour, y = pred), color = "red")
+
+```
+
+## Conclusions
+
+Brooklyn has the highest number of gun crimes in New York City by borough. Brooklyn has the most population, so next we need to look at the number of crimes per capita. 
+
+
+In addition, an analysis of the time period in which crimes occur shows that the number of crimes is low in the morning, with a minimum at 9:00 a.m., increasing in the evening and peaking at 11:00 p.m.
+
+
+Regarding bias, it is necessary to investigate the effects of races, residents income, educational level, etc. with objective data and conduct an analysis that eliminates the bias.
+
+```{r}
+sessionInfo()
+```
