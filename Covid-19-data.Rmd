@@ -1,0 +1,302 @@
+---
+title: "Covid-19-data Analysis"
+author: "Daisaku Ikoma"
+date: "2022-10-28"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective of this analysis
+
+I will analyze Covid-19 data. Data is read from the Johns Hopkins University Github site. I will visualize the data grouped by country and, for the US, by state. Then I am going to analyze correlations between Covid-19 cases and deaths. In addition, I will analyze autocorrelation and partial autocorrelation for new patients and try to fit them to a time-series model.
+
+## Clear memory
+
+At first, I clear memories in advance.
+
+```{r clear_memory}
+rm(list=ls())
+gc();gc()
+```
+
+## Import libraries
+
+I import libraries to use this analysis.
+
+```{r import_libraries}
+Sys.setenv(LANGUAGE="en")
+library(tidyverse)
+library(lubridate)
+# If you haven't installed 'forecast' yet, please do so.
+# >install.packages('forecast', dependencies = TRUE)
+library(forecast)
+```
+
+## Step 1 - Identify and import the data
+
+I will start by reading in the data from the four main csv files.
+
+```{r get_jhu_data}
+# Get current Data in the four files
+# They all begin the same way
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in, file_names)
+```
+
+Let's read in the data and see what we have.
+
+```{r import_data, message = FALSE}
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+```
+
+## Step 2 - Tidy and Transform Data
+
+After looking at global_cases and global_deaths, I would like to tidy those datasets and put each variable (date, cases, deaths) in their own colum.
+Also, I don't need Lat and Long for the analysis I am planning, so I will get rid of those and rename Region and State to be more R friendly.
+
+```{r tidy_global_data}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_state = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+global <- global %>% filter(cases > 0)
+
+summary(global)
+```
+
+```{r tidy_US_data}
+US_cases <- US_cases %>%
+  pivot_longer(cols = -c(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+US <- US_cases %>%
+  full_join(US_deaths)
+
+summary(US)
+```
+
+```{r unite_global_data}
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_state, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+summary(global)
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+## Step 3 - Visualizing Data
+
+I will visualize the data. First, draw a time series graph of cases and deaths across the US. Then plot the time series data for each state (here, New York and Colorado). I also shows a bar chart of total cases and deaths by state.
+
+```{r visualizing_data, warning = FALSE}
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_by_mill = deaths * 1000000 / Population) %>%
+  ungroup()
+
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+
+state <- "New York"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+
+state <- "Colorado"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+
+g_cases <- ggplot(US_by_state, aes(x = Province_State, y = cases)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "Cases of COVID19 by States", y = NULL)
+plot(g_cases)
+
+g_deaths <- ggplot(US_by_state, aes(x = Province_State, y = deaths)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "Deaths of COVID19 by States", y = NULL)
+plot(g_deaths)
+```
+
+## Step 4 - Analyzing Data
+
+I will analyze new cases and deaths for the entire US and New York.
+
+```{r analyzing_data, warning = FALSE}
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+
+state <- "New York"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarise(deaths = max(deaths), cases = max(cases),
+            Population = max(Population),
+            cases_per_thou = 1000 * cases / Population,
+            deaths_per_thou = 1000 * deaths / Population) %>%
+  filter(cases > 0, Population > 0)
+
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+
+US_state_totals %>%
+  slice_max(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+```
+
+## Step 5 - Modeling Data
+
+I will do modeling. First, we perform a correlation analysis between cases and deaths. I also fit the correlation with a linear model. Next, I analyze the autocorrelations and partial autocorrelations of the time series data of new-affected individuals and fit them with a time series model (ARIMA model).
+
+```{r modeling_data}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+US_state_totals %>% slice_min(cases_per_thou)
+US_state_totals %>% slice_max(cases_per_thou)
+
+x_grid <- seq(1, 451)
+new_df <- tibble(cases_per_thou = x_grid)
+US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red") +
+  labs(title = "Linear Modeling of Cases and Deaths of COVID19", y = NULL)
+
+Y <- US_totals$new_cases
+Y[is.na(Y)] <- 0
+ts.plot(Y, main = "New cases of COVID-19 in US")
+acf(Y, main = "Auto-correlation of New cases")
+pacf(Y, main = "Partial Auto-correlation of New cases")
+auto.arima(Y, ic="aic", stepwise=T, trace=T) 
+```
+
+## Conclusions
+
+- US COVID-19 cases are increasing exponentially, and so are the deaths. Since the middle of 2020, it has been increasing continuously, although not exponentially.
+- I looked at the cases in New York and Colorado, the trend is similar across the US. 
+- By state, California, Texas, New York, and Florida have the most cases and deaths.
+- Focusing on new cases and deaths, both will level off from the middle of 2020.
+- There is a loose positive correlation between the cases and the deaths.
+- From ACF, the order of the MR model is likely to be more than 30 days, and the order of the AR model is likely to be more than half a month. However, the best ARIMA model was (2, 1, 2).
+
+Bias include the distribution of PCR test kits. In developed countries such as the US, it is possible to receive sufficient PCR tests and measure the number of infected people, but in developing countries, there is a possibility that accurate numbers cannot be obtained due to the lack of PCR test kits. Also, within the US, it is conceivable that the status of COVID-19 testing will change as a function of income. A certain number of low-income people are likely to be sick or die without being tested for COVID-19.
+
+Therefore, for a more objective analysis, it is necessary to correct the bias while looking at trends in the number of deaths other than COVID-19 in the future.
+
+```{r sessioninfo}
+sessionInfo()
+```
